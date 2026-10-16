@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisioIndústria — protótipo</title>
+<style>
+  :root{--bg:#f3f1ec;--fg:#1b1f23;--mut:#5b636b;--card:#fff;--line:#d5d2c9;--acc:#0b5cab;--warn:#b45309;--bad:#b91c1c}
+  @media (prefers-color-scheme:dark){:root{--bg:#14181c;--fg:#eceff2;--mut:#9aa4ae;--card:#1d2328;--line:#323a42;--acc:#5aa9f0;--warn:#f0a548;--bad:#f27a7a}}
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.5 system-ui,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--fg)}
+  main{max-width:960px;margin:0 auto;padding:16px}
+  h1{font-size:1.5rem;margin:0 0 4px}
+  p.sub{margin:0 0 16px;color:var(--mut)}
+  .stage{position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:4/3;max-height:70vh;width:100%}
+  video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+  .grid-lines{position:absolute;inset:0;pointer-events:none;background:
+    linear-gradient(to right,transparent 33.2%,rgba(255,255,255,.35) 33.3%,transparent 33.5%,transparent 66.5%,rgba(255,255,255,.35) 66.6%,transparent 66.8%)}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  button{font:inherit;padding:12px 18px;border-radius:6px;border:2px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer;min-height:48px}
+  button.sec{background:transparent;color:var(--acc)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--warn);outline-offset:2px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin-bottom:12px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:700px){.cols{grid-template-columns:1fr}}
+  #status{font-weight:600}
+  #log{max-height:180px;overflow:auto;margin:0;padding-left:18px;font-size:.9rem}
+  .m{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dashed var(--line);padding:3px 0}
+  label{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0}
+  input[type=range]{width:55%}
+  small{color:var(--mut)}
+  .aviso{border-left:4px solid var(--warn)}
+</style>
+</head>
+<body>
+<main>
+  <h1>VisioIndústria</h1>
+  <p class="sub">Protótipo experimental: câmera, detecção de objetos e alertas de áudio em português. Tudo roda no navegador.</p>
+
+  <div class="panel aviso">
+    <strong>Ferramenta complementar.</strong> Não confirma que o caminho está livre, não evita colisões e não substitui bengala, cão-guia ou procedimentos de segurança. Nenhuma imagem é armazenada nem enviada: o processamento é local (o modelo é baixado uma vez, pela internet).
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="grid-lines"></div>
+  </div>
+
+  <div class="bar" role="group" aria-label="Controles">
+    <button id="btnIniciar">Iniciar assistência</button>
+    <button id="btnPausar" class="sec" disabled>Pausar</button>
+    <button id="btnEncerrar" class="sec" disabled>Encerrar</button>
+    <button id="btnTeste" class="sec">Testar áudio</button>
+  </div>
+  <p><small>Atalhos: <b>Espaço</b> inicia ou pausa, <b>Esc</b> encerra.</small></p>
+
+  <div class="panel"><span id="status" role="status" aria-live="polite">Pronto para iniciar.</span></div>
+
+  <div class="cols">
+    <div class="panel">
+      <strong>Ajustes</strong>
+      <label>Confiança mínima <input type="range" id="conf" min="40" max="90" value="60"><span id="confV">60%</span></label>
+      <label>Quadros consecutivos <input type="range" id="persist" min="1" max="5" value="2"><span id="persistV">2</span></label>
+      <label>Intervalo de análise (ms) <input type="range" id="intervalo" min="100" max="1000" step="50" value="300"><span id="intervaloV">300</span></label>
+      <label>Pausa entre alertas iguais (s) <input type="range" id="cool" min="2" max="20" value="6"><span id="coolV">6</span></label>
+      <label>Câmera <select id="camSel"><option value="">Padrão (traseira)</option></select></label>
+    </div>
+    <div class="panel">
+      <strong>Métricas</strong>
+      <div class="m"><span>Latência captura → alerta</span><span id="mLat">–</span></div>
+      <div class="m"><span>Tempo de inferência</span><span id="mInf">–</span></div>
+      <div class="m"><span>Quadros analisados</span><span id="mFr">0</span></div>
+      <div class="m"><span>Alertas emitidos</span><span id="mAl">0</span></div>
+      <div class="m"><span>Alertas suprimidos (repetição)</span><span id="mSup">0</span></div>
+      <div class="m"><span>Falhas</span><span id="mFa">0</span></div>
+      <button class="sec" id="btnCsv" style="margin-top:8px">Baixar métricas (CSV)</button>
+    </div>
+  </div>
+
+  <div class="panel"><strong>Registro de alertas</strong><ol id="log"></ol></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const video = $('video'), canvas = $('overlay'), ctx = canvas.getContext('2d');
+
+  // Categorias de interesse (COCO-SSD) → texto em português
+  const CLASSES = {
+    person:   {nome:'Pessoa', prio:3, msg:'Pessoa identificada'},
+    truck:    {nome:'Veículo', prio:3, msg:'Veículo detectado'},
+    car:      {nome:'Veículo', prio:3, msg:'Veículo detectado'},
+    bicycle:  {nome:'Bicicleta', prio:2, msg:'Bicicleta detectada'},
+    motorcycle:{nome:'Moto', prio:3, msg:'Moto detectada'},
+    suitcase: {nome:'Caixa ou mala', prio:2, msg:'Possível caixa'},
+    backpack: {nome:'Volume', prio:1, msg:'Volume detectado'},
+    chair:    {nome:'Cadeira', prio:2, msg:'Cadeira detectada'},
+    bench:    {nome:'Banco', prio:2, msg:'Banco detectado'},
+    'potted plant':{nome:'Objeto', prio:1, msg:'Objeto detectado'},
+    'dining table':{nome:'Mesa', prio:2, msg:'Mesa detectada'},
+    couch:    {nome:'Móvel', prio:2, msg:'Móvel detectado'},
+    tv:       {nome:'Equipamento', prio:1, msg:'Equipamento detectado'},
+    refrigerator:{nome:'Equipamento', prio:2, msg:'Equipamento grande detectado'}
+  };
+  // Observação: o COCO-SSD não conhece "palete" nem "carrinho". Para isso, treine/troque o modelo.
+
+  let model = null, stream = null, running = false, paused = false, timer = null, busy = false;
+  let voice = null;
+  const tracks = new Map();      // chave "classe|posição" → {frames, ultimoAlerta, ausentes}
+  const metrics = {frames:0, alertas:0, supr:0, falhas:0, rows:[]};
+  let lastSpeakAt = 0, falhasSeguidas = 0, avisouFalha = false;
+
+  const status = t => { $('status').textContent = t; };
+  const bind = (id, out, fmt = v => v) => { const e = $(id); const u = () => $(out).textContent = fmt(e.value); e.addEventListener('input', u); u(); };
+  bind('conf','confV',v=>v+'%'); bind('persist','persistV'); bind('intervalo','intervaloV'); bind('cool','coolV');
+  const cfg = () => ({conf:+$('conf').value/100, persist:+$('persist').value, intervalo:+$('intervalo').value, cool:+$('cool').value*1000});
+
+  // ---------- Áudio ----------
+  function pickVoice(){
+    const vs = speechSynthesis.getVoices();
+    voice = vs.find(v => /pt-BR/i.test(v.lang)) || vs.find(v => /^pt/i.test(v.lang)) || null;
+  }
+  if ('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+  function falar(texto, urgente = false){
+    if (!('speechSynthesis' in window)) { status('Síntese de voz indisponível neste navegador.'); return false; }
+    if (urgente) speechSynthesis.cancel();
+    else if (speechSynthesis.speaking) return false;      // evita fila de mensagens
+    const u = new SpeechSynthesisUtterance(texto);
+    u.lang = 'pt-BR'; if (voice) u.voice = voice; u.rate = 1.1;
+    speechSynthesis.speak(u);
+    return true;
+  }
+  function bipe(freq = 880, ms = 120){
+    try{
+      const a = new (window.AudioContext || window.webkitAudioContext)();
+      const o = a.createOscillator(), g = a.createGain();
+      o.frequency.value = freq; g.gain.value = .15; o.connect(g); g.connect(a.destination);
+      o.start(); setTimeout(() => { o.stop(); a.close(); }, ms);
+    }catch(e){}
+  }
+
+  // ---------- Câmera ----------
+  async function listarCameras(){
+    try{
+      const ds = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+      const sel = $('camSel'); sel.innerHTML = '<option value="">Padrão (traseira)</option>';
+      ds.forEach((d,i) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || ('Câmera ' + (i+1)); sel.appendChild(o); });
+    }catch(e){}
+  }
+  async function abrirCamera(){
+    const id = $('camSel').value;
+    const c = {audio:false, video: id ? {deviceId:{exact:id}, width:{ideal:640}, height:{ideal:480}}
+                                      : {facingMode:{ideal:'environment'}, width:{ideal:640}, height:{ideal:480}}};
+    stream = await navigator.mediaDevices.getUserMedia(c);
+    video.srcObject = stream; await video.play();
+    stream.getVideoTracks()[0].addEventListener('ended', () => falha('A câmera foi desconectada.'));
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    listarCameras();
+  }
+  function fecharCamera(){ if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; } video.srcObject = null; }
+
+  // ---------- Fluxo ----------
+  async function iniciar(){
+    if (running){ return paused ? retomar() : pausar(); }
+    $('btnIniciar').disabled = true;
+    try{
+      status('Verificando câmera e áudio…');
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Este navegador não permite acesso à câmera. Abra o arquivo em https ou localhost.');
+      if (!('speechSynthesis' in window)) throw new Error('Este navegador não tem síntese de voz.');
+      await abrirCamera();
+      if (!model){ status('Carregando modelo de detecção (primeira vez demora)…'); model = await cocoSsd.load({base:'lite_mobilenet_v2'}); }
+      running = true; paused = false; tracks.clear(); falhasSeguidas = 0; avisouFalha = false;
+      $('btnPausar').disabled = false; $('btnEncerrar').disabled = false; $('btnIniciar').textContent = 'Pausar / retomar';
+      $('btnIniciar').disabled = false;
+      status('Assistência ativa.'); falar('Assistência ativada.', true);
+      loop();
+    }catch(e){
+      $('btnIniciar').disabled = false; fecharCamera();
+      metrics.falhas++; $('mFa').textContent = metrics.falhas;
+      const msg = e.name === 'NotAllowedError' ? 'Permissão da câmera negada.' : e.message;
+      status('Erro: ' + msg); falar('Atenção: não foi possível iniciar a análise do ambiente.', true);
+    }
+  }
+  function pausar(){ paused = true; clearTimeout(timer); ctx.clearRect(0,0,canvas.width,canvas.height); status('Assistência pausada.'); falar('Assistência pausada.', true); }
+  function retomar(){ paused = false; status('Assistência ativa.'); falar('Assistência retomada.', true); loop(); }
+  function encerrar(){
+    running = false; paused = false; clearTimeout(timer); fecharCamera(); ctx.clearRect(0,0,canvas.width,canvas.height);
+    $('btnPausar').disabled = true; $('btnEncerrar').disabled = true; $('btnIniciar').textContent = 'Iniciar assistência';
+    status('Assistência encerrada.'); falar('Assistência encerrada.', true);
+  }
+  function falha(msg){
+    metrics.falhas++; $('mFa').textContent = metrics.falhas;
+    status('Falha: ' + msg);
+    if (!avisouFalha){ avisouFalha = true; falar('Atenção: não foi possível analisar o ambiente.', true); bipe(300, 400); log('FALHA — ' + msg); }
+  }
+
+  // ---------- Detecção ----------
+  async function loop(){
+    if (!running || paused) return;
+    const t0 = performance.now();
+    if (!busy){
+      busy = true;
+      try{
+        if (video.readyState < 2 || !stream || !stream.active) throw new Error('Sem imagem da câmera.');
+        const tCap = performance.now();
+        const preds = await model.detect(video, 20, 0.3);
+        const tInf = performance.now() - tCap;
+        metrics.frames++; $('mFr').textContent = metrics.frames; $('mInf').textContent = tInf.toFixed(0) + ' ms';
+        falhasSeguidas = 0; avisouFalha = false;
+        analisar(preds, tCap);
+        desenhar(preds);
+      }catch(e){
+        falhasSeguidas++; if (falhasSeguidas >= 3) falha(e.message || 'Erro de processamento.');
+      }finally{ busy = false; }
+    }
+    const gasto = performance.now() - t0;
+    timer = setTimeout(loop, Math.max(0, cfg().intervalo - gasto));
+  }
+
+  function zona(box){
+    const cx = (box[0] + box[2]/2) / video.videoWidth;
+    return cx < .33 ? 'à esquerda' : cx > .66 ? 'à direita' : 'à frente';
+  }
+  function analisar(preds, tCap){
+    const c = cfg(), agora = performance.now(), vistos = new Set();
+    const candidatos = [];
+    for (const p of preds){
+      const info = CLASSES[p.class]; if (!info || p.score < c.conf) continue;
+      const z = zona(p.bbox), chave = info.nome + '|' + z; vistos.add(chave);
+      const area = (p.bbox[2] * p.bbox[3]) / (video.videoWidth * video.videoHeight);
+      let t = tracks.get(chave) || {frames:0, ultimo:0, ausentes:0, maior:0};
+      t.frames++; t.ausentes = 0;
+      if (!tracks.has(chave)) tracks.set(chave, t);
+      if (t.frames >= c.persist){
+        const cresceu = area > t.maior * 1.6 && t.ultimo;   // mudança relevante: aproximou-se visualmente
+        if (!t.ultimo || agora - t.ultimo > c.cool || cresceu) candidatos.push({chave, t, info, z, area, cresceu});
+        else { metrics.supr++; $('mSup').textContent = metrics.supr; }
+      }
+      t.maior = Math.max(t.maior * .98, area);
+    }
+    for (const [k,t] of tracks){ if (!vistos.has(k)){ t.ausentes++; t.frames = 0; if (t.ausentes > 8) tracks.delete(k); } }
+
+    if (!candidatos.length) return;
+    candidatos.sort((a,b) => (b.info.prio - a.info.prio) || (b.area - a.area));
+    const alvo = candidatos[0];
+    // Frase curta; "à frente" = região central da imagem, não distância
+    const texto = alvo.info.msg + ' ' + alvo.z + '.' + (alvo.cresceu ? ' Aproximando.' : '');
+    if (falar(texto, alvo.info.prio >= 3 || alvo.cresceu)){
+      alvo.t.ultimo = agora; alvo.t.maior = alvo.area;
+      const lat = performance.now() - tCap;
+      metrics.alertas++; $('mAl').textContent = metrics.alertas; $('mLat').textContent = lat.toFixed(0) + ' ms';
+      metrics.rows.push([new Date().toISOString(), alvo.info.nome, alvo.z, lat.toFixed(0), texto]);
+      log(texto);
+      if (alvo.info.prio >= 3) bipe(660, 100);
+    }
+  }
+
+  function desenhar(preds){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.lineWidth = 3; ctx.font = '600 16px system-ui'; const c = cfg();
+    for (const p of preds){
+      const info = CLASSES[p.class]; if (!info || p.score < c.conf) continue;
+      const [x,y,w,h] = p.bbox;
+      ctx.strokeStyle = info.prio >= 3 ? '#ff5a5a' : '#ffc14d'; ctx.strokeRect(x,y,w,h);
+      const rot = info.nome + ' ' + Math.round(p.score*100) + '%';
+      ctx.fillStyle = ctx.strokeStyle; ctx.fillRect(x, y-22, ctx.measureText(rot).width + 10, 22);
+      ctx.fillStyle = '#000'; ctx.fillText(rot, x+5, y-5);
+    }
+  }
+
+  // ---------- Registro / métricas ----------
+  function log(t){
+    const li = document.createElement('li'); li.textContent = new Date().toLocaleTimeString('pt-BR') + ' — ' + t;
+    $('log').prepend(li); while ($('log').children.length > 50) $('log').lastChild.remove();
+  }
+  $('btnCsv').onclick = () => {
+    const csv = 'hora;objeto;posicao;latencia_ms;mensagem\n' + metrics.rows.map(r => r.join(';')).join('\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}));
+    a.download = 'visioindustria_metricas.csv'; a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  // ---------- Controles ----------
+  $('btnIniciar').onclick = iniciar;
+  $('btnPausar').onclick = () => paused ? retomar() : pausar();
+  $('btnEncerrar').onclick = encerrar;
+  $('btnTeste').onclick = () => { bipe(); falar('Teste de áudio. Atenção: possível obstáculo à frente.', true); };
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+    if (e.code === 'Space'){ e.preventDefault(); iniciar(); }
+    if (e.code === 'Escape' && running) encerrar();
+  });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && running && !paused) pausar(); });
+})();
+</script>
+</body>
+</html>
